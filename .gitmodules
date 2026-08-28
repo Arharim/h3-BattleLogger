@@ -1,0 +1,3 @@
+[submodule "extern/H3API"]
+	path = extern/H3API
+	url = https://github.com/RoseKavalier/H3API
