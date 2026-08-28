@@ -27,52 +27,76 @@ static constexpr uintptr_t COMBAT_MGR_PTR_HD = 0x699420; // тот же
 
 static DWORD WINAPI PollThread(LPVOID) {
     bool wasInBattle = false;
+    bool needZero = false;
     int lastTurn = -1;
     void* lastActive = nullptr;
+    int prevAlive[2][21] = {};
+    bool prevInit = false;
     HANDLE mf = CreateFileA("Z:\\Games2\\HoM&M III by LC\\Logs\\PollThread.txt", GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (mf != INVALID_HANDLE_VALUE) { const char* m="PollThread started\n"; DWORD w; WriteFile(mf,m,(DWORD)strlen(m),&w,nullptr); CloseHandle(mf); }
     while (g_Running) {
         h3::H3CombatManager* mgr = nullptr;
-        if (!IsBadReadPtr((void*)COMBAT_MGR_PTR, 4)) {
-            mgr = *(h3::H3CombatManager**)COMBAT_MGR_PTR;
-        }
+        if (!IsBadReadPtr((void*)COMBAT_MGR_PTR, 4)) mgr = *(h3::H3CombatManager**)COMBAT_MGR_PTR;
         bool inBattle = (mgr != nullptr && !IsBadReadPtr(mgr, sizeof(h3::H3CombatManager)));
-        if (inBattle && !wasInBattle) {
+        if (needZero && !inBattle) needZero=false;
+        if (inBattle && !wasInBattle && !needZero) {
             BattleLogger::Instance().OpenNewBattle("poll");
             BattleLogger::Instance().LogBattleStart(-1,-1);
-            // снапшот стеков
-            for (int side=0; side<2; ++side) for (int i=0;i<20;++i) {
-                auto &st = mgr->stacks[side][i];
-                if (st.type >=0 && st.numberAlive>0) {
-                    BattleEvent ev{}; ev.type="stack"; ev.attacker = "side"+std::to_string(side)+" idx"+std::to_string(i);
-                    ev.extra = "type="+std::to_string(st.type)+" count="+std::to_string(st.numberAlive);
-                    BattleLogger::Instance().Log(ev);
+            Sleep(500);
+            if (!IsBadReadPtr(mgr, sizeof(h3::H3CombatManager))) {
+                for (int side=0; side<2; ++side) for (int i=0;i<21;++i) {
+                    auto &st = mgr->stacks[side][i];
+                    if (IsBadReadPtr(&st, sizeof(st))) continue;
+                    if (st.type >=0 && st.type < 200 && st.numberAlive>0 && st.numberAlive<100000) {
+                        BattleEvent ev{}; ev.type="stack"; ev.attacker="side"+std::to_string(side)+" slot"+std::to_string(i);
+                        ev.extra="type="+std::to_string(st.type)+" count="+std::to_string(st.numberAlive)+" pos="+std::to_string(st.position);
+                        ev.tick=GetTickCount();
+                        BattleLogger::Instance().Log(ev);
+                    }
+                    prevAlive[side][i]=st.numberAlive;
                 }
+                prevInit=true;
             }
-            lastTurn = mgr->turn;
-            lastActive = mgr->activeStack;
+            lastTurn = mgr ? mgr->turn : -1;
+            lastActive = mgr ? mgr->activeStack : nullptr;
             wasInBattle = true;
         } else if (inBattle && wasInBattle) {
-            // раунд
-            if (mgr->turn != lastTurn) {
-                BattleLogger::Instance().LogRound(mgr->turn);
-                lastTurn = mgr->turn;
-            }
-            // смена активного стека -> потенциально атака/ход
+            if (IsBadReadPtr(mgr, sizeof(h3::H3CombatManager))) { Sleep(50); continue; }
+            if (mgr->turn != lastTurn) { BattleLogger::Instance().LogRound(mgr->turn); lastTurn=mgr->turn; }
             if (mgr->activeStack != lastActive && mgr->activeStack) {
                 auto* st = (h3::H3CombatCreature*)mgr->activeStack;
                 if (!IsBadReadPtr(st, sizeof(h3::H3CombatCreature))) {
-                    BattleEvent ev{}; ev.type="active"; ev.attacker = "type "+std::to_string(st->type)+" x"+std::to_string(st->numberAlive);
-                    ev.extra = "side "+std::to_string(mgr->currentActiveSide);
-                    ev.tick = GetTickCount();
+                    BattleEvent ev{}; ev.type="active"; ev.attacker="type "+std::to_string(st->type)+" x"+std::to_string(st->numberAlive);
+                    ev.extra="side "+std::to_string(mgr->currentActiveSide)+" pos "+std::to_string(st->position);
+                    ev.tick=GetTickCount();
                     BattleLogger::Instance().Log(ev);
                 }
-                lastActive = mgr->activeStack;
+                lastActive=mgr->activeStack;
+            }
+            if (prevInit) {
+                for(int s=0;s<2;++s) for(int i=0;i<21;++i) {
+                    int cur = mgr->stacks[s][i].numberAlive;
+                    if (cur != prevAlive[s][i] && !IsBadReadPtr(&mgr->stacks[s][i], sizeof(h3::H3CombatCreature))) {
+                        int killed = prevAlive[s][i] - cur;
+                        if (killed>0) {
+                            BattleEvent ev{}; ev.type="killed";
+                            ev.attacker="side"+std::to_string(s)+" slot"+std::to_string(i)+" type"+std::to_string(mgr->stacks[s][i].type);
+                            ev.killed=killed; ev.extra="alive "+std::to_string(cur);
+                            ev.tick=GetTickCount();
+                            BattleLogger::Instance().Log(ev);
+                        }
+                        prevAlive[s][i]=cur;
+                    }
+                }
+            }
+            if (mgr->finished) {
+                BattleLogger::Instance().CloseBattle("finished");
+                wasInBattle=false; needZero=true; lastTurn=-1; lastActive=nullptr; prevInit=false;
+                continue;
             }
         } else if (!inBattle && wasInBattle) {
             BattleLogger::Instance().CloseBattle("poll_end");
-            wasInBattle = false;
-            lastTurn = -1; lastActive=nullptr;
+            wasInBattle=false; lastTurn=-1; lastActive=nullptr; prevInit=false;
         }
         Sleep(50);
     }
