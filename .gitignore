@@ -1,11 +1,14 @@
 ﻿build/
 logs/
 Logs/
-*.log
-*.jsonl
-*.txt
-!README.md
-!patcher_x86.ini.example
+# battle logs (не игнорить исходники *.txt)
+Battle_*.txt
+Battle_*.jsonl
+Hook_*.txt
+PollThread.txt
+patcher_x86 log.txt
+patcher_x86 dump.txt
+HD_CRASH_LOG.txt
 .clangd/cache/
 .zed/.cache/
 .vs/
