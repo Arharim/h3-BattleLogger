@@ -1,0 +1,36 @@
+[
+  {
+    "label": "configure (MSVC+Ninja)",
+    "command": "cmake",
+    "args": [
+      "-B",
+      "build",
+      "-G",
+      "Ninja",
+      "-DCMAKE_BUILD_TYPE=Release",
+      "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"
+    ],
+    "use_new_terminal": false
+  },
+  {
+    "label": "build",
+    "command": "cmake",
+    "args": ["--build", "build", "--config", "Release"],
+    "use_new_terminal": false
+  },
+  {
+    "label": "clean build",
+    "command": "powershell",
+    "args": ["-Command", "Remove-Item -Recurse -Force build -ErrorAction SilentlyContinue; cmake -B build -G Ninja -DCMAKE_EXPORT_COMPILE_COMMANDS=ON; cmake --build build"],
+    "use_new_terminal": false
+  },
+  {
+    "label": "copy to HoMM3",
+    "command": "powershell",
+    "args": [
+      "-Command",
+      "Copy-Item build/BattleLogger.dll 'Z:/Games2/HoMM 3 SOD/BattleLogger.dll' -Force; Write-Host 'Copied to HoMM 3 SOD/BattleLogger.dll'"
+    ],
+    "use_new_terminal": false
+  }
+]

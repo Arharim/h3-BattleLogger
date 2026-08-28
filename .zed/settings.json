@@ -1,0 +1,15 @@
+{
+  "lsp": {
+    "clangd": {
+      "initialization_options": {
+        "compilationDatabasePath": "build"
+      }
+    }
+  },
+  "languages": {
+    "C++": {
+      "language_servers": ["clangd"],
+      "format_on_save": "off"
+    }
+  }
+}

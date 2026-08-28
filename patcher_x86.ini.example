@@ -1,0 +1,6 @@
+; Скопируй этот блок в Z:/Games2/HoMM 3 SOD/patcher_x86.ini
+; или создай ini рядом с DLL если используешь HD Launcher
+[BattleLogger]
+dll="BattleLogger.dll"
+patch="BattleLogger_Init"
+; HD загрузит DLL при старте Heroes3 HD.exe

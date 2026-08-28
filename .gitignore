@@ -1,0 +1,13 @@
+﻿build/
+logs/
+Logs/
+*.log
+*.jsonl
+*.txt
+!README.md
+!patcher_x86.ini.example
+.clangd/cache/
+.zed/.cache/
+.vs/
+.idea/
+extern/H3API/build/

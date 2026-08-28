@@ -1,0 +1,43 @@
+CompileFlags:
+  CompilationDatabase: build
+  Add:
+    - -std=c++17
+    - -D_WINDOWS
+    - -DWIN32_LEAN_AND_MEAN
+    - -D_CRT_SECURE_NO_WARNINGS
+    - -Iinclude
+    - -Iextern/H3API
+  Remove:
+    - /W3
+    - /MP
+    - /GS-
+    - /Oi
+    - /EHsc
+    - /permissive-
+    - /MT
+    - /MTd
+    - /O2
+    - /Gy
+    - /Zi
+    - /DYNAMICBASE:NO
+
+Diagnostics:
+  UnusedIncludes: Strict
+  MissingIncludes: Strict
+  ClangTidy:
+    Add: [modernize-*, performance-*, bugprone-*]
+    Remove: [modernize-use-trailing-return-type]
+    CheckOptions:
+      modernize-use-auto.MinTypeNameLength: "5"
+
+Index:
+  Background: Build
+  StandardLibrary: true
+
+InlayHints:
+  Enabled: true
+  ParameterNames: true
+  DeducedTypes: true
+
+Hover:
+  ShowAKA: true
