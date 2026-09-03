@@ -1,77 +1,75 @@
-# HoMM3 BattleLogger — HD Complete (SoD) + sodSP
+# HoMM3 BattleLogger
 
-Плагин для `Heroes3 HD.exe` (SoD Complete) пишет **все** события боя во внешний файл в 2 формата одновременно.
+Плагин для Heroes III Complete (SoD) под HD-mode. Пишет все события боя во внешние
+файлы в двух форматах одновременно: человекочитаемый `txt` и машинный `jsonl`.
 
-## План
+## Установка
 
-**v0.1 — Скелет (сейчас):**
-- [x] Сборка `BattleLogger.dll` под `MSVC2022 + Ninja` + `clangd` для `zed`
-- [x] `BattleLogger` ядро: `Battle_*.jsonl` + `Battle_*.txt` в `HoMM 3 SOD/Logs/`
-- [ ] Подключить `H3API` + `patcher_x86` хуки
+1. Скопировать `BattleLogger.dll` в `_HD3_Data/Packs/BattleLogger/`
+2. Добавить `"BattleLogger"` в `<Packs>` в `_HD3_Data/Settings/sod.ini`
+3. (альтернатива) блок в `patcher_x86.ini` рядом с `patcher_x86.dll`:
+   ```ini
+   [BattleLogger]
+   dll="BattleLogger.dll"
+   patch="BattleLogger_Init"
+   ```
 
-**v0.2 — Базовый бой (аналитика):**
-- Хуки `0x473950` Start / `0x475F90` End / `0x4438D0` Attack / `0x5A3A10` Damage
-- Логирование урона, удачи, количества убитых
+Логи создаются в `Logs/` рядом с `Heroes3 HD.exe`.
 
-**v0.3 — Полный лог:**
-- Мораль, касты `0x5A3D30`, стрельба, ответки, стены
-- `RNG seed` для каждой атаки
+## Сборка
 
-**v0.4 — Задел под реплей:**
-- Снапшот армий на старте + все броски RNG -> можно восстановить бой
+Нужны: MSVC 2022 Build Tools (v143), CMake, Ninja, just.
 
-## Toolchain
-
-- **Компилятор:** `MSVC 2022 Build Tools v143` (`/MT` статический CRT). `clangd` только для IDE.
-- **Сборка:** `CMake + Ninja` + `compile_commands.json` для `zed`.
-- **Загрузка:** через `patcher_x86.dll` (идет с HD). Прописать в `patcher_x86.ini`.
-
-## Сборка (zed / cli)
-
-**Через `just` (рекомендуется):**
 ```powershell
-& "C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
-just --list      # список команд
-just build       # configure + build
-just copy        # build + копия в HoMM 3 SOD/BattleLogger.dll
-just fmt         # clang-format
-just check       # проверка compile_commands.json для clangd
+just build     # configure + build (x86)
+just copy-lc   # копия в папку игры
+just fmt       # clang-format
+just check     # compile_commands.json для clangd
 ```
 
-**Через `cmake` напрямую:**
+Вручную:
 ```powershell
-& "C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
-cmake --build build --config Release
-copy build\BattleLogger.dll "Z:\Games2\HoMM 3 SOD\BattleLogger.dll"
-# + добавить блок из patcher_x86.ini.example в patcher_x86.ini
+cmake --build build
 ```
 
-В `zed`: `task spawn` -> `configure`/`build`/`copy to HoMM3` или `terminal: just build`. `clangd` подхватит `build/compile_commands.json` автоматом.
+## Что логируется
 
-**Конфиги:**
-- `.clangd:1` - указывает `clangd` на `build/compile_commands.json`, режет MSVC флаги
-- `.clang-format:1` - `LLVM 4 spaces, 100 cols`
-- `justfile:1` / `.zed/tasks.json:1` - одинаковые таски для cli и zed
+- `battle_start` / `battle_end` - границы боя
+- `stack` - снапшот армий обеих сторон (type, count, позиция)
+- `active` - активный стек (luck, morale, hpLost)
+- `round` - раунды
+- `killed` - гибель существ в стеке
+- `rng` - сид ГСЧ на каждый ход (задел под реплей)
 
-## Форматы
+## Формат
 
-`Battle_2026-08-28_12-00-00.jsonl`:
+`Battle_<timestamp>.jsonl` - одна строка = одно событие:
 ```json
-{"tick":12345,"round":1,"type":"attack","attacker":"Pikeman x15","defender":"Griffin x5","damage":42,"killed":2,"luck":1}
-{"tick":12346,"round":1,"type":"round","round":2}
+{"tick":4494578,"round":0,"type":"stack","attacker":"side0 slot0","extra":"type=139 count=1 pos=86 luck=0 morale=0"}
+{"tick":4494578,"round":0,"type":"active","attacker":"type 139 x1","extra":"side 0 pos 86 luck=0 morale=0 hpLost=0"}
+{"tick":4501296,"round":0,"type":"killed","attacker":"side1 slot3 type139","killed":1,"extra":"alive 0"}
 ```
 
-`Battle_2026-08-28_12-00-00.txt`:
+`Battle_<timestamp>.txt` - то же самое читаемо:
 ```
-=== HoMM3 Battle Log === Battle_2026-08-28_12-00-00
-[START] HeroAtk=0 HeroDef=8
+=== HoMM3 Battle Log === Battle_2026-09-03_20-44-36_1_poll
+[stack] side0 slot0 type=139 count=1 pos=86
 -- Round 1 --
-[ATTACK] Pikeman x15 -> Griffin x5 | dmg=42 killed=2 LUCK!
+[killed] side1 slot3 type139 alive 0
+[END] finished
 ```
 
-## Следующий шаг
+## Как работает
 
-1. `git clone https://github.com/RoseKavalier/H3API extern/H3API`
-2. Раскомментировать `FetchContent_MakeAvailable` в `CMakeLists.txt` или `add_subdirectory`
-3. Реализовать `Hooks::Install()` в `src/Hooks.cpp` (заготовки уже есть)
+Определение боя - опрос указателя `H3CombatManager` (`0x699420`) из рабочего потока
+каждые 50мс. LoHook на адресах старта/конца боя не используются: они перекрыты
+`HD_SOD.dll` и вызывают access violation при Wait. Определение гибели - сравнение
+`numberAlive` стеков между опросами. Загрузка - HD-пак или `patcher_x86.dll`.
+
+## Технические заметки
+
+- Только x86 (`vcvars32`): Heroes3.exe - 32-битный процесс
+- `/MT` - статический CRT, без зависимости от vcruntime
+- Хедеры H3API подключены как submodule (`extern/H3API`)
+- Проверено: SoD Complete 3.2 + HD 5.3 R4 + SoD_SP 1.19.3.15

@@ -9,6 +9,7 @@ PollThread.txt
 patcher_x86 log.txt
 patcher_x86 dump.txt
 HD_CRASH_LOG.txt
+PLAN.md
 .clangd/cache/
 .zed/.cache/
 .vs/
