@@ -40,6 +40,19 @@ static std::string ToUtf8(const char* s) {
     return u;
 }
 
+// HD хранит имена героев с тегами цвета: "{~o}Имя}" -> "Имя"
+static std::string StripNameTags(std::string s) {
+    size_t pos;
+    while ((pos = s.find("{~")) != std::string::npos) {
+        size_t end = s.find('}', pos);
+        if (end == std::string::npos) { s.erase(pos); break; }
+        s.erase(pos, end - pos + 1);
+    }
+    s.erase(std::remove(s.begin(), s.end(), '{'), s.end());
+    s.erase(std::remove(s.begin(), s.end(), '}'), s.end());
+    return s;
+}
+
 static const char* ActionName(int a) {
     switch (a) {
         case 0: return "cancel";
@@ -106,7 +119,7 @@ static DWORD WINAPI PollThread(LPVOID) {
                     auto* hero = mgr->hero[side];
                     if (!hero || IsBadReadPtr(hero, sizeof(h3::H3Hero))) continue;
                     BattleEvent ev{}; ev.type="hero";
-                    ev.attacker = ToUtf8(hero->name);
+                    ev.attacker = StripNameTags(ToUtf8(hero->name));
                     ev.extra = "side="+std::to_string(side)
                         +" id="+std::to_string(hero->id)
                         +" level="+std::to_string(hero->level)
