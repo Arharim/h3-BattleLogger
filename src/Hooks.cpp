@@ -3,6 +3,7 @@
 #include "patcher_x86.hpp"
 #include <windows.h>
 #include "h3api/H3Managers/H3CombatManager.hpp"
+#include "h3api/H3Heroes/H3Hero.hpp"
 
 // Адреса для SoD 3.2 Complete (HD-mode не сдвигает Combat)
 // Сверено с H3API + sodSP. Если игра HotA - оффсеты те же для базовой логики.
@@ -20,40 +21,23 @@ static volatile bool g_Running = false;
 // Адрес CombatManager в SoD/HD (H3API: 0x699420)
 static constexpr uintptr_t COMBAT_MGR_PTR = 0x699420;
 
-// CP1251 -> UTF-8: имена атакующих из ReportDamageDone в кодировке игры
-static std::string Cp1251ToUtf8(const char* s) {
+// CP1251 -> UTF-8 с авто-детектом: строки игры в CP1251, но имена героев
+// под HD уже UTF-8. Валидный UTF-8 проходит как есть, остальное конвертится.
+static std::string ToUtf8(const char* s) {
     if (!s) return "";
-    std::string out;
-    out.reserve(strlen(s) * 2);
-    for (const unsigned char c : std::string(s)) {
-        unsigned int cp = 0xFFFD;
-        if (c < 0x80) { out += (char)c; continue; }
-        else if (c == 0xA8) cp = 0x0401;      // Ё
-        else if (c == 0xB8) cp = 0x0451;      // ё
-        else if (c == 0xA9) cp = 0x00A9;      // (c)
-        else if (c == 0xAE) cp = 0x00AE;      // (r)
-        else if (c == 0xAB) cp = 0x00AB;      // <<
-        else if (c == 0xBB) cp = 0x00BB;      // >>
-        else if (c == 0xB9) cp = 0x2116;      // №
-        else if (c == 0x85) cp = 0x2026;      // ...
-        else if (c == 0x96) cp = 0x2013;
-        else if (c == 0x97) cp = 0x2014;
-        else if (c == 0x91) cp = 0x2018;
-        else if (c == 0x92) cp = 0x2019;
-        else if (c == 0x93) cp = 0x201C;
-        else if (c == 0x94) cp = 0x201D;
-        else if (c >= 0xC0) cp = 0x0410 + (c - 0xC0); // А-Я а-я
-        if (cp < 0x80) { out += (char)cp; }
-        else if (cp < 0x800) {
-            out += (char)(0xC0 | (cp >> 6));
-            out += (char)(0x80 | (cp & 0x3F));
-        } else {
-            out += (char)(0xE0 | (cp >> 12));
-            out += (char)(0x80 | ((cp >> 6) & 0x3F));
-            out += (char)(0x80 | (cp & 0x3F));
-        }
-    }
-    return out;
+    // валидный UTF-8? (MB_ERR_INVALID_CHARS отсеет CP1251-кириллицу)
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, s, -1, nullptr, 0) > 0)
+        return std::string(s);
+    int wlen = MultiByteToWideChar(1251, 0, s, -1, nullptr, 0);
+    if (wlen <= 0) return std::string(s);
+    std::wstring w(wlen, L'\0');
+    MultiByteToWideChar(1251, 0, s, -1, &w[0], wlen);
+    int ulen = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    if (ulen <= 0) return std::string(s);
+    std::string u(ulen, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, &u[0], ulen, nullptr, nullptr);
+    if (!u.empty() && u.back() == '\0') u.pop_back();
+    return u;
 }
 
 static const char* ActionName(int a) {
@@ -117,6 +101,31 @@ static DWORD WINAPI PollThread(LPVOID) {
                 }
                 prevInit = true;
                 snapshotDone = true;
+                // снапшот героев: имя, статы, мана, стартовая армия
+                for (int side=0; side<2; ++side) {
+                    auto* hero = mgr->hero[side];
+                    if (!hero || IsBadReadPtr(hero, sizeof(h3::H3Hero))) continue;
+                    BattleEvent ev{}; ev.type="hero";
+                    ev.attacker = ToUtf8(hero->name);
+                    ev.extra = "side="+std::to_string(side)
+                        +" id="+std::to_string(hero->id)
+                        +" level="+std::to_string(hero->level)
+                        +" atk="+std::to_string(hero->primarySkill[0])
+                        +" def="+std::to_string(hero->primarySkill[1])
+                        +" power="+std::to_string(hero->primarySkill[2])
+                        +" knowledge="+std::to_string(hero->primarySkill[3])
+                        +" mana="+std::to_string(hero->spellPoints);
+                    // стартовый состав армии героя (до боя)
+                    std::string army;
+                    for (int i=0;i<7;++i) {
+                        if (hero->army.type[i] > 0 && hero->army.count[i] > 0) {
+                            army += (army.empty() ? "" : ", ") + std::string(names::Creature(hero->army.type[i])) + " x" + std::to_string(hero->army.count[i]);
+                        }
+                    }
+                    ev.extra += " army=[" + army + "]";
+                    ev.tick=GetTickCount();
+                    BattleLogger::Instance().Log(ev);
+                }
             }
             if (mgr->turn != lastTurn) {
                 // сброс счетчика = конец тактической фазы (turn тикает при расстановке)
@@ -229,7 +238,7 @@ static DWORD WINAPI PollThread(LPVOID) {
 int __stdcall OnReportDamage(HiHook* h, void* mgr, const char* attackerName, int numAttackers, int damageDone, void* target, int killedCount) {
     BattleEvent ev{};
     ev.type = "report";
-    ev.attacker = Cp1251ToUtf8(attackerName) + " x" + std::to_string(numAttackers);
+    ev.attacker = ToUtf8(attackerName) + " x" + std::to_string(numAttackers);
     ev.damage = damageDone;
     ev.killed = killedCount;
     auto* tgt = (h3::H3CombatCreature*)target;
