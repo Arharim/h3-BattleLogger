@@ -13,7 +13,8 @@ constexpr _ptr_ BattleEnd    = 0x475F90; // BattleMgr::Finish
 constexpr _ptr_ BattleRound  = 0x4E0B90; // начало раунда
 constexpr _ptr_ CombatAttack = 0x4438D0; // melee attack
 constexpr _ptr_ CombatShoot  = 0x443A00; // shoot
-constexpr _ptr_ DamageCalc   = 0x5A3A10; // calc damage
+constexpr _ptr_ DamageCalc   = 0x5A3A10; // не вызывается в HD_SOD - мертвый адрес
+constexpr _ptr_ ReportDamage = 0x469670; // CombatManager::ReportDamageDone (H3API)
 }
 
 namespace Hooks {
@@ -240,6 +241,28 @@ int __stdcall OnDamageCalc(LoHook* h, HookContext* c) {
     return EXEC_DEFAULT;
 }
 
+// ReportDamageDone (0x469670, THISCALL): пишет в игровой боевой лог.
+// Сюда попадают точные цифры урона, которые игра показывает игроку.
+// EXTENDED_ THISCALL_: (HiHook*, this, attackerName, numAttackers, damageDone, target, killedCount)
+int __stdcall OnReportDamage(HiHook* h, void* mgr, const char* attackerName, int numAttackers, int damageDone, void* target, int killedCount) {
+    BattleEvent ev{};
+    ev.type = "report";
+    ev.attacker = attackerName ? attackerName : "?";
+    ev.attacker += " x" + std::to_string(numAttackers);
+    ev.damage = damageDone;
+    ev.killed = killedCount;
+    auto* tgt = (h3::H3CombatCreature*)target;
+    if (tgt && !IsBadReadPtr(tgt, sizeof(h3::H3CombatCreature))) {
+        ev.defender = std::string(names::Creature(tgt->type)) + " x" + std::to_string(tgt->numberAlive)
+            + " side " + std::to_string(tgt->side) + " pos " + std::to_string(tgt->position);
+    }
+    ev.tick = GetTickCount();
+    BattleLogger::Instance().Log(ev);
+    // вызываем оригинал (thiscall через fastcall-трюк: this -> первый арг, edx -> заглушка)
+    auto orig = (int(__fastcall*)(void*, void*, const char*, int, int, void*, int))h->GetDefaultFunc();
+    return orig(mgr, nullptr, attackerName, numAttackers, damageDone, target, killedCount);
+}
+
 void Install() {
     // Пробуем получить Patcher (требует что patcher_x86.dll уже загружен HD)
     Patcher* patcher = GetPatcher();
@@ -261,7 +284,9 @@ void Install() {
     g_PI->WriteHiHook(Addrs::BattleInit, SPLICE_, EXTENDED_, THISCALL_, (void*)OnBattleStartHi);
     // g_PI->WriteLoHook(Addrs::BattleEnd, OnBattleEnd); // крэш 0x475F90
     // g_PI->WriteLoHook(Addrs::CombatAttack, OnAttack); // крэш 0x4438D4 на wait
-    g_PI->WriteLoHook(Addrs::DamageCalc, OnDamageCalc); // безопасно, только на урон
+    // 0x5A3A10 не вызывается в этой сборке - LoHook убран
+    // ReportDamageDone: точные броски урона из игрового лога
+    g_PI->WriteHiHook(Addrs::ReportDamage, SPLICE_, EXTENDED_, THISCALL_, (void*)OnReportDamage);
 
     // Polling fallback для HD (если хуки не триггерят)
     g_Running = true;
