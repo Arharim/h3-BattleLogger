@@ -1,4 +1,5 @@
 #include "../include/BattleLogger.h"
+#include "../include/Names.h"
 #include "patcher_x86.hpp"
 #include <windows.h>
 #include "h3api/H3Managers/H3CombatManager.hpp"
@@ -78,7 +79,7 @@ static DWORD WINAPI PollThread(LPVOID) {
                     auto &st = mgr->stacks[side][i];
                     if (IsBadReadPtr(&st, sizeof(st))) continue;
                     if (st.type > 0 && st.numberAlive > 0) {
-                        BattleEvent ev{}; ev.type="stack"; ev.attacker="side"+std::to_string(side)+" slot"+std::to_string(i);
+                        BattleEvent ev{}; ev.type="stack"; ev.attacker=std::string(names::Creature(st.type))+" x"+std::to_string(st.numberAlive)+" side"+std::to_string(side)+" slot"+std::to_string(i);
                         ev.extra="type="+std::to_string(st.type)+" count="+std::to_string(st.numberAlive)+" pos="+std::to_string(st.position)+" luck="+std::to_string(st.luck)+" morale="+std::to_string(st.morale);
                         ev.tick=GetTickCount();
                         BattleLogger::Instance().Log(ev);
@@ -94,34 +95,38 @@ static DWORD WINAPI PollThread(LPVOID) {
             if (mgr->action != lastLoggedAction) {
                 if (mgr->action != 0) {
                     auto* atk = (h3::H3CombatCreature*)mgr->activeStack;
-                    if (atk && !IsBadReadPtr(atk, sizeof(h3::H3CombatCreature))) {
-                        BattleEvent ev{}; ev.type="action";
-                        ev.attacker="type "+std::to_string(atk->type)+" x"+std::to_string(atk->numberAlive)+" side "+std::to_string(mgr->currentActiveSide)+" pos "+std::to_string(atk->position);
-                        // резолв цели: стек на гексу actionTarget
-                        std::string tgt = "hex "+std::to_string(mgr->actionTarget);
-                        int th = mgr->actionTarget;
-                        if (th >= 0 && th < 187) {
-                            for (int s=0;s<2;++s) for (int i=0;i<21;++i) {
-                                auto &tst = mgr->stacks[s][i];
-                                if (IsBadReadPtr(&tst, sizeof(tst))) continue;
-                                if (tst.numberAlive > 0 && tst.position == th) {
-                                    tgt = "type "+std::to_string(tst.type)+" x"+std::to_string(tst.numberAlive)+" side "+std::to_string(s)+" pos "+std::to_string(th);
-                                    s=2; break;
-                                }
+                if (atk && !IsBadReadPtr(atk, sizeof(h3::H3CombatCreature))) {
+                    BattleEvent ev{}; ev.type="action";
+                    ev.attacker=std::string(names::Creature(atk->type))+" x"+std::to_string(atk->numberAlive)+" side "+std::to_string(mgr->currentActiveSide)+" pos "+std::to_string(atk->position);
+                    // резолв цели: стек на гексу actionTarget
+                    std::string tgt = "hex "+std::to_string(mgr->actionTarget);
+                    int th = mgr->actionTarget;
+                    if (th >= 0 && th < 187) {
+                        for (int s=0;s<2;++s) for (int i=0;i<21;++i) {
+                            auto &tst = mgr->stacks[s][i];
+                            if (IsBadReadPtr(&tst, sizeof(tst))) continue;
+                            if (tst.numberAlive > 0 && tst.position == th) {
+                                tgt = std::string(names::Creature(tst.type))+" x"+std::to_string(tst.numberAlive)+" side "+std::to_string(s)+" pos "+std::to_string(th);
+                                s=2; break;
                             }
                         }
-                        ev.defender = tgt;
-                        ev.extra = "action="+std::to_string(mgr->action)+"("+ActionName(mgr->action)+") param="+std::to_string(mgr->actionParameter);
-                        ev.tick = GetTickCount();
-                        BattleLogger::Instance().Log(ev);
                     }
+                    ev.defender = tgt;
+                    ev.extra = "action="+std::to_string(mgr->action)+"("+ActionName(mgr->action)+") param="+std::to_string(mgr->actionParameter);
+                    // для кастов - имя заклинания
+                    if (mgr->action == 1 && mgr->actionParameter >= 0) {
+                        ev.extra += std::string(" spell=") + names::Spell(mgr->actionParameter);
+                    }
+                    ev.tick = GetTickCount();
+                    BattleLogger::Instance().Log(ev);
+                }
                 }
                 lastLoggedAction = mgr->action;
             }
             if (mgr->activeStack != lastActive && mgr->activeStack) {
                 auto* st = (h3::H3CombatCreature*)mgr->activeStack;
                 if (!IsBadReadPtr(st, sizeof(h3::H3CombatCreature))) {
-                    BattleEvent ev{}; ev.type="active"; ev.attacker="type "+std::to_string(st->type)+" x"+std::to_string(st->numberAlive);
+                    BattleEvent ev{}; ev.type="active"; ev.attacker=std::string(names::Creature(st->type))+" x"+std::to_string(st->numberAlive);
                     ev.extra="side "+std::to_string(mgr->currentActiveSide)+" pos "+std::to_string(st->position)+" luck="+std::to_string(st->luck)+" morale="+std::to_string(st->morale)+" hpLost="+std::to_string(st->healthLost);
                     ev.tick=GetTickCount();
                     BattleLogger::Instance().Log(ev);
@@ -147,14 +152,14 @@ static DWORD WINAPI PollThread(LPVOID) {
                         int killed = prevAlive[s][i] - cur;
                         if (killed > 0) {
                             BattleEvent ev{}; ev.type="killed";
-                            ev.attacker="side"+std::to_string(s)+" slot"+std::to_string(i)+" type"+std::to_string(st.type);
+                            ev.attacker=std::string(names::Creature(st.type))+" side"+std::to_string(s)+" slot"+std::to_string(i);
                             ev.killed=killed; ev.extra="alive "+std::to_string(cur);
                             ev.tick=GetTickCount();
                             BattleLogger::Instance().Log(ev);
                         }
                         if (hpDelta != 0) {
                             BattleEvent ev{}; ev.type="damage";
-                            ev.defender="side"+std::to_string(s)+" slot"+std::to_string(i)+" type"+std::to_string(st.type);
+                            ev.defender=std::string(names::Creature(st.type))+" side"+std::to_string(s)+" slot"+std::to_string(i);
                             ev.damage = hpDelta + (killed > 0 ? killed * st.baseHP : 0);
                             ev.killed = killed;
                             ev.extra="hpLost "+std::to_string(curHpLost)+"/"+std::to_string(st.baseHP)+" alive "+std::to_string(cur);
