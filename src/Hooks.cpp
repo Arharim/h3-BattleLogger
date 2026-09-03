@@ -8,12 +8,6 @@
 // Сверено с H3API + sodSP. Если игра HotA - оффсеты те же для базовой логики.
 namespace Addrs {
 // BattleMgr @ 0x699420 в H3API, но хуки ставим на функции:
-constexpr _ptr_ BattleInit   = 0x473950; // BattleMgr::Init - старт боя
-constexpr _ptr_ BattleEnd    = 0x475F90; // BattleMgr::Finish
-constexpr _ptr_ BattleRound  = 0x4E0B90; // начало раунда
-constexpr _ptr_ CombatAttack = 0x4438D0; // melee attack
-constexpr _ptr_ CombatShoot  = 0x443A00; // shoot
-constexpr _ptr_ DamageCalc   = 0x5A3A10; // не вызывается в HD_SOD - мертвый адрес
 constexpr _ptr_ ReportDamage = 0x469670; // CombatManager::ReportDamageDone (H3API)
 }
 
@@ -25,7 +19,42 @@ static volatile bool g_Running = false;
 
 // Адрес CombatManager в SoD/HD (H3API: 0x699420)
 static constexpr uintptr_t COMBAT_MGR_PTR = 0x699420;
-static constexpr uintptr_t COMBAT_MGR_PTR_HD = 0x699420; // тот же
+
+// CP1251 -> UTF-8: имена атакующих из ReportDamageDone в кодировке игры
+static std::string Cp1251ToUtf8(const char* s) {
+    if (!s) return "";
+    std::string out;
+    out.reserve(strlen(s) * 2);
+    for (const unsigned char c : std::string(s)) {
+        unsigned int cp = 0xFFFD;
+        if (c < 0x80) { out += (char)c; continue; }
+        else if (c == 0xA8) cp = 0x0401;      // Ё
+        else if (c == 0xB8) cp = 0x0451;      // ё
+        else if (c == 0xA9) cp = 0x00A9;      // (c)
+        else if (c == 0xAE) cp = 0x00AE;      // (r)
+        else if (c == 0xAB) cp = 0x00AB;      // <<
+        else if (c == 0xBB) cp = 0x00BB;      // >>
+        else if (c == 0xB9) cp = 0x2116;      // №
+        else if (c == 0x85) cp = 0x2026;      // ...
+        else if (c == 0x96) cp = 0x2013;
+        else if (c == 0x97) cp = 0x2014;
+        else if (c == 0x91) cp = 0x2018;
+        else if (c == 0x92) cp = 0x2019;
+        else if (c == 0x93) cp = 0x201C;
+        else if (c == 0x94) cp = 0x201D;
+        else if (c >= 0xC0) cp = 0x0410 + (c - 0xC0); // А-Я а-я
+        if (cp < 0x80) { out += (char)cp; }
+        else if (cp < 0x800) {
+            out += (char)(0xC0 | (cp >> 6));
+            out += (char)(0x80 | (cp & 0x3F));
+        } else {
+            out += (char)(0xE0 | (cp >> 12));
+            out += (char)(0x80 | ((cp >> 6) & 0x3F));
+            out += (char)(0x80 | (cp & 0x3F));
+        }
+    }
+    return out;
+}
 
 static const char* ActionName(int a) {
     switch (a) {
@@ -57,8 +86,6 @@ static DWORD WINAPI PollThread(LPVOID) {
     bool snapshotDone = false;
     int lastLoggedAction = -1;
     int lastRng = 0;
-    HANDLE mf = CreateFileA("Z:\\Games2\\HoM&M III by LC\\Logs\\PollThread.txt", GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (mf != INVALID_HANDLE_VALUE) { const char* m="PollThread started\n"; DWORD w; WriteFile(mf,m,(DWORD)strlen(m),&w,nullptr); CloseHandle(mf); }
     while (g_Running) {
         h3::H3CombatManager* mgr = nullptr;
         if (!IsBadReadPtr((void*)COMBAT_MGR_PTR, 4)) mgr = *(h3::H3CombatManager**)COMBAT_MGR_PTR;
@@ -91,7 +118,17 @@ static DWORD WINAPI PollThread(LPVOID) {
                 prevInit = true;
                 snapshotDone = true;
             }
-            if (mgr->turn != lastTurn) { BattleLogger::Instance().LogRound(mgr->turn); lastTurn=mgr->turn; }
+            if (mgr->turn != lastTurn) {
+                // сброс счетчика = конец тактической фазы (turn тикает при расстановке)
+                if (mgr->turn < lastTurn) {
+                    BattleEvent ev{}; ev.type="tactics_end";
+                    ev.extra="turn "+std::to_string(lastTurn)+"->"+std::to_string(mgr->turn);
+                    ev.tick=GetTickCount();
+                    BattleLogger::Instance().Log(ev);
+                }
+                BattleLogger::Instance().LogRound(mgr->turn);
+                lastTurn=mgr->turn;
+            }
             // действия: ловим любое изменение action на ненулевое (actionUndergoing слишком короткий для 50мс)
             if (mgr->action != lastLoggedAction) {
                 if (mgr->action != 0) {
@@ -186,69 +223,13 @@ static DWORD WINAPI PollThread(LPVOID) {
     return 0;
 }
 
-// LoHook хук: вызывается перед оригинальным кодом
-int __stdcall OnBattleStart(LoHook* h, HookContext* c) {
-    HANDLE mf = CreateFileA("Z:\\Games2\\HoM&M III by LC\\Logs\\Hook_BattleStart_Lo.txt", GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (mf != INVALID_HANDLE_VALUE) { const char* m="OnBattleStart Lo\n"; DWORD w; WriteFile(mf,m,(DWORD)strlen(m),&w,nullptr); CloseHandle(mf); }
-    BattleLogger::Instance().OpenNewBattle("hook_test_lo");
-    BattleLogger::Instance().LogBattleStart(0, 0);
-    return EXEC_DEFAULT;
-}
-
-// HiHook для BattleInit (thiscall) - пробуем как альтернативу LoHook
-int __stdcall OnBattleStartHi(HiHook* h, void* battleMgr) {
-    HANDLE mf = CreateFileA("Z:\\Games2\\HoM&M III by LC\\Logs\\Hook_BattleStart_Hi.txt", GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (mf != INVALID_HANDLE_VALUE) { const char* m="OnBattleStart Hi\n"; DWORD w; WriteFile(mf,m,(DWORD)strlen(m),&w,nullptr); CloseHandle(mf); }
-    BattleLogger::Instance().OpenNewBattle("hook_test_hi");
-    // вызываем оригинал
-    auto orig = (int (__thiscall*)(void*))h->GetDefaultFunc();
-    int ret = orig(battleMgr);
-    return ret;
-}
-
-int __stdcall OnBattleEnd(LoHook* h, HookContext* c) {
-    BattleLogger::Instance().CloseBattle("battle_end");
-    return EXEC_DEFAULT;
-}
-
-int __stdcall OnRound(LoHook* h, HookContext* c) {
-    // c->esi обычно содержит номер раунда, но логируем как инкремент
-    static int round = 0;
-    round++;
-    BattleLogger::Instance().LogRound(round);
-    return EXEC_DEFAULT;
-}
-
-int __stdcall OnAttack(LoHook* h, HookContext* c) {
-    BattleEvent ev{};
-    ev.type = "attack";
-    ev.attacker = "unknown";
-    ev.extra = "hook 0x4438D0";
-    ev.tick = GetTickCount();
-    BattleLogger::Instance().Log(ev);
-    return EXEC_DEFAULT;
-}
-
-int __stdcall OnDamageCalc(LoHook* h, HookContext* c) {
-    // 0x5A3A10 - вызывается только при реальной атаке, не на Wait
-    BattleEvent ev{};
-    ev.type = "damage_calc";
-    ev.tick = GetTickCount();
-    // Пытаемся достать damage из стека: c->esi/c->edi часто содержат attacker/defender
-    // Для MVP логируем факт вызова
-    ev.extra = "0x5A3A10";
-    BattleLogger::Instance().Log(ev);
-    return EXEC_DEFAULT;
-}
-
 // ReportDamageDone (0x469670, THISCALL): пишет в игровой боевой лог.
 // Сюда попадают точные цифры урона, которые игра показывает игроку.
 // EXTENDED_ THISCALL_: (HiHook*, this, attackerName, numAttackers, damageDone, target, killedCount)
 int __stdcall OnReportDamage(HiHook* h, void* mgr, const char* attackerName, int numAttackers, int damageDone, void* target, int killedCount) {
     BattleEvent ev{};
     ev.type = "report";
-    ev.attacker = attackerName ? attackerName : "?";
-    ev.attacker += " x" + std::to_string(numAttackers);
+    ev.attacker = Cp1251ToUtf8(attackerName) + " x" + std::to_string(numAttackers);
     ev.damage = damageDone;
     ev.killed = killedCount;
     auto* tgt = (h3::H3CombatCreature*)target;
@@ -280,13 +261,10 @@ void Install() {
     }
 
     // Ставим хуки
-    g_PI->WriteLoHook(Addrs::BattleInit, OnBattleStart);
-    g_PI->WriteHiHook(Addrs::BattleInit, SPLICE_, EXTENDED_, THISCALL_, (void*)OnBattleStartHi);
-    // g_PI->WriteLoHook(Addrs::BattleEnd, OnBattleEnd); // крэш 0x475F90
-    // g_PI->WriteLoHook(Addrs::CombatAttack, OnAttack); // крэш 0x4438D4 на wait
-    // 0x5A3A10 не вызывается в этой сборке - LoHook убран
     // ReportDamageDone: точные броски урона из игрового лога
     g_PI->WriteHiHook(Addrs::ReportDamage, SPLICE_, EXTENDED_, THISCALL_, (void*)OnReportDamage);
+    // Хуки 0x473950/0x475F90/0x4438D0 в HD_SOD не работают или крэшат - убраны,
+    // старт/конец боя ловит PollThread через CombatManager
 
     // Polling fallback для HD (если хуки не триггерят)
     g_Running = true;
