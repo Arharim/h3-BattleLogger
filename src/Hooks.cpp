@@ -239,11 +239,15 @@ static DWORD WINAPI PollThread(LPVOID) {
                     }
                 }
             }
-            // стены форта (осады): снапшот + детект разрушений/урона
-            if (!IsBadReadPtr(mgr->fortWallsAlive, sizeof(mgr->fortWallsAlive))) {
+            // стены форта (осады): дифф после инициализации армий
+            if (!wallsInit) {
+                if (!IsBadReadPtr(mgr->fortWallsAlive, sizeof(mgr->fortWallsAlive))) {
+                    for (int i=0;i<18;++i) wallsAlivePrev[i] = mgr->fortWallsAlive[i];
+                    wallsInit = true;
+                }
+            } else if (!IsBadReadPtr(mgr->fortWallsAlive, sizeof(mgr->fortWallsAlive))) {
                 for (int i=0;i<18;++i) {
                     int alive = mgr->fortWallsAlive[i];
-                    if (!wallsInit) { wallsAlivePrev[i] = alive; continue; }
                     if (alive != wallsAlivePrev[i]) {
                         BattleEvent ev{}; ev.type="wall";
                         ev.attacker="section "+std::to_string(i);
@@ -254,7 +258,6 @@ static DWORD WINAPI PollThread(LPVOID) {
                         wallsAlivePrev[i]=alive;
                     }
                 }
-                wallsInit = true;
             }
             if (mgr->finished) {
                 // дельта героев: опыт, уровень, мана
