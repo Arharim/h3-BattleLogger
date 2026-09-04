@@ -76,7 +76,6 @@ static const char* ActionName(int a) {
 static DWORD WINAPI PollThread(LPVOID) {
     bool wasInBattle = false;
     bool prevFinished = false;
-    bool autoCombatPrev = false;
     int lastTurn = -1;
     void* lastActive = nullptr;
     int prevAlive[2][21] = {};
@@ -85,6 +84,11 @@ static DWORD WINAPI PollThread(LPVOID) {
     bool snapshotDone = false;
     int lastLoggedAction = -1;
     int lastRng = 0;
+    bool autoCombatPrev = false;
+    // отложенное чтение героя: опыт начисляется после finished (экран результатов)
+    bool finalPending = false;
+    DWORD finalAt = 0;
+    h3::H3Hero* heroPtrCache[2] = {nullptr, nullptr};
     // стартовое состояние героев для дельты на battle_end
     struct HeroSnap { int level; int exp; int mana; bool valid; };
     HeroSnap heroSnap[2] = {{0,0,0,false},{0,0,0,false}};
@@ -94,19 +98,42 @@ static DWORD WINAPI PollThread(LPVOID) {
         h3::H3CombatManager* mgr = nullptr;
         if (!IsBadReadPtr((void*)COMBAT_MGR_PTR, 4)) mgr = *(h3::H3CombatManager**)COMBAT_MGR_PTR;
         bool inBattle = (mgr != nullptr && !IsBadReadPtr(mgr, sizeof(h3::H3CombatManager)));
+        // отложенный hero_final: читаем героя через 5с после finished (опыт уже начислен)
+        if (finalPending && (int)(GetTickCount() - finalAt) >= 0) {
+            for (int side=0; side<2; ++side) {
+                auto* hero = heroPtrCache[side];
+                if (!hero || IsBadReadPtr(hero, sizeof(h3::H3Hero))) continue;
+                BattleEvent ev{}; ev.type="hero_final";
+                ev.attacker = StripNameTags(ToUtf8(hero->name));
+                ev.extra = "side="+std::to_string(side)
+                    +" exp="+std::to_string(hero->experience)
+                    +" (d"+std::to_string(hero->experience - heroSnap[side].exp)+")"
+                    +" level="+std::to_string(hero->level)
+                    +" mana="+std::to_string(hero->spellPoints);
+                ev.tick=GetTickCount();
+                BattleLogger::Instance().Log(ev);
+            }
+            BattleLogger::Instance().CloseBattle("finished_final");
+            finalPending = false;
+            heroSnap[0]=heroSnap[1]={0,0,0,false};
+            heroPtrCache[0]=heroPtrCache[1]=nullptr;
+            continue;
+        }
         if (inBattle && !wasInBattle) {
             // после finished менеджер жив с finished=true - ждем сброса (replay) или нового боя
+            if (finalPending) { Sleep(20); continue; }
             if (prevFinished && mgr->finished) { Sleep(20); continue; }
+            // открытие: свежий бой (mgr из null) или повтор боя на живом менеджере (finished true->false)
             BattleLogger::Instance().OpenNewBattle("poll");
             BattleLogger::Instance().LogBattleStart(-1,-1);
             lastTurn = mgr->turn;
             lastActive = mgr->activeStack;
             wasInBattle = true;
-            prevFinished = false;
-            autoCombatPrev = false;
             snapshotDone = false;
             lastLoggedAction = -1;
             wallsInit = false;
+            prevFinished = false;
+            autoCombatPrev = false;
         } else if (inBattle && wasInBattle) {
             if (IsBadReadPtr(mgr, sizeof(h3::H3CombatManager))) { Sleep(50); continue; }
             // отложенный снапшот армий: ждем первый ход (стеки уже заполнены)
@@ -150,8 +177,9 @@ static DWORD WINAPI PollThread(LPVOID) {
                     ev.tick=GetTickCount();
                     BattleLogger::Instance().Log(ev);
                     heroSnap[side] = { hero->level, hero->experience, hero->spellPoints, true };
+                    heroPtrCache[side] = hero;
                 }
-                // осада: тир обороны по числу заряженных башен, тип из менеджера и ров
+                // осада: башни (реальный тир обороны), тип форта и ров
                 if (mgr->siegeKind >= 0) {
                     int towersLoaded = 0;
                     for (int i=0;i<3;++i) {
@@ -289,7 +317,7 @@ static DWORD WINAPI PollThread(LPVOID) {
                 }
             }
             if (mgr->finished) {
-                // дельта героев: опыт, уровень, мана
+                // мгновенная дельта (на момент finished - опыт может быть еще не начислен)
                 for (int side=0; side<2; ++side) {
                     auto* hero = mgr->hero[side];
                     if (!heroSnap[side].valid || !hero || IsBadReadPtr(hero, sizeof(h3::H3Hero))) continue;
@@ -303,9 +331,10 @@ static DWORD WINAPI PollThread(LPVOID) {
                     ev.tick=GetTickCount();
                     BattleLogger::Instance().Log(ev);
                 }
-                BattleLogger::Instance().CloseBattle("finished");
+                // лог не закрываем: ждем отложенного hero_final (5с) и закрываем после него
                 wasInBattle=false; prevFinished=true; lastTurn=-1; lastActive=nullptr; prevInit=false; snapshotDone=false; lastLoggedAction=-1;
-                heroSnap[0]=heroSnap[1]={0,0,0,false};
+                finalPending = true;
+                finalAt = GetTickCount() + 5000;
                 continue;
             }
         } else if (!inBattle && wasInBattle) {
