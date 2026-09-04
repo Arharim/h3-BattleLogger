@@ -10,6 +10,7 @@
 namespace Addrs {
 // BattleMgr @ 0x699420 в H3API, но хуки ставим на функции:
 constexpr _ptr_ ReportDamage = 0x469670; // CombatManager::ReportDamageDone (H3API)
+constexpr _ptr_ CastSpell    = 0x5A0140; // CombatManager::CastSpell (H3API)
 }
 
 namespace Hooks {
@@ -83,6 +84,11 @@ static DWORD WINAPI PollThread(LPVOID) {
     bool snapshotDone = false;
     int lastLoggedAction = -1;
     int lastRng = 0;
+    // стартовое состояние героев для дельты на battle_end
+    struct HeroSnap { int level; int exp; int mana; bool valid; };
+    HeroSnap heroSnap[2] = {{0,0,0,false},{0,0,0,false}};
+    int wallsAlivePrev[18]; bool wallsInit = false;
+    for (int i=0;i<18;++i) wallsAlivePrev[i] = -1;
     while (g_Running) {
         h3::H3CombatManager* mgr = nullptr;
         if (!IsBadReadPtr((void*)COMBAT_MGR_PTR, 4)) mgr = *(h3::H3CombatManager**)COMBAT_MGR_PTR;
@@ -96,6 +102,7 @@ static DWORD WINAPI PollThread(LPVOID) {
             wasInBattle = true;
             snapshotDone = false;
             lastLoggedAction = -1;
+            wallsInit = false;
         } else if (inBattle && wasInBattle) {
             if (IsBadReadPtr(mgr, sizeof(h3::H3CombatManager))) { Sleep(50); continue; }
             // отложенный снапшот армий: ждем первый ход (стеки уже заполнены)
@@ -138,6 +145,7 @@ static DWORD WINAPI PollThread(LPVOID) {
                     ev.extra += " army=[" + army + "]";
                     ev.tick=GetTickCount();
                     BattleLogger::Instance().Log(ev);
+                    heroSnap[side] = { hero->level, hero->experience, hero->spellPoints, true };
                 }
             }
             if (mgr->turn != lastTurn) {
@@ -231,9 +239,41 @@ static DWORD WINAPI PollThread(LPVOID) {
                     }
                 }
             }
+            // стены форта (осады): снапшот + детект разрушений/урона
+            if (!IsBadReadPtr(mgr->fortWallsAlive, sizeof(mgr->fortWallsAlive))) {
+                for (int i=0;i<18;++i) {
+                    int alive = mgr->fortWallsAlive[i];
+                    if (!wallsInit) { wallsAlivePrev[i] = alive; continue; }
+                    if (alive != wallsAlivePrev[i]) {
+                        BattleEvent ev{}; ev.type="wall";
+                        ev.attacker="section "+std::to_string(i);
+                        ev.extra="alive "+std::to_string(wallsAlivePrev[i])+"->"+std::to_string(alive)
+                            +" hp="+std::to_string(mgr->fortWallsHp[i]);
+                        ev.tick=GetTickCount();
+                        BattleLogger::Instance().Log(ev);
+                        wallsAlivePrev[i]=alive;
+                    }
+                }
+                wallsInit = true;
+            }
             if (mgr->finished) {
+                // дельта героев: опыт, уровень, мана
+                for (int side=0; side<2; ++side) {
+                    auto* hero = mgr->hero[side];
+                    if (!heroSnap[side].valid || !hero || IsBadReadPtr(hero, sizeof(h3::H3Hero))) continue;
+                    BattleEvent ev{}; ev.type="hero_delta";
+                    ev.attacker = StripNameTags(ToUtf8(hero->name));
+                    ev.extra = "side="+std::to_string(side)
+                        +" exp "+std::to_string(heroSnap[side].exp)+"->"+std::to_string(hero->experience)
+                        +" (+"+std::to_string(hero->experience - heroSnap[side].exp)+")"
+                        +" level "+std::to_string(heroSnap[side].level)+"->"+std::to_string(hero->level)
+                        +" mana "+std::to_string(heroSnap[side].mana)+"->"+std::to_string(hero->spellPoints);
+                    ev.tick=GetTickCount();
+                    BattleLogger::Instance().Log(ev);
+                }
                 BattleLogger::Instance().CloseBattle("finished");
                 wasInBattle=false; needZero=true; lastTurn=-1; lastActive=nullptr; prevInit=false; snapshotDone=false; lastLoggedAction=-1;
+                heroSnap[0]=heroSnap[1]={0,0,0,false};
                 continue;
             }
         } else if (!inBattle && wasInBattle) {
@@ -266,6 +306,25 @@ int __stdcall OnReportDamage(HiHook* h, void* mgr, const char* attackerName, int
     return orig(mgr, nullptr, attackerName, numAttackers, damageDone, target, killedCount);
 }
 
+// CastSpell (0x5A0140, THISCALL): все касты в бою, обе стороны.
+// (HiHook*, this, spell_id, hex_ix, cast_type_012, hex2_ix, skill_level, spell_power)
+void __stdcall OnCastSpell(HiHook* h, void* mgr, int spell_id, int hex_ix, int cast_type, int hex2_ix, int skill_level, int spell_power) {
+    auto* m = (h3::H3CombatManager*)mgr;
+    BattleEvent ev{};
+    ev.type = "spell_cast";
+    ev.attacker = std::string(names::Spell(spell_id)) + " side " + std::to_string(m ? m->currentActiveSide : -1);
+    ev.extra = "spell_id=" + std::to_string(spell_id)
+        + " hex=" + std::to_string(hex_ix)
+        + " hex2=" + std::to_string(hex2_ix)
+        + " cast_type=" + std::to_string(cast_type)
+        + " skill=" + std::to_string(skill_level)
+        + " power=" + std::to_string(spell_power);
+    ev.tick = GetTickCount();
+    BattleLogger::Instance().Log(ev);
+    auto orig = (void(__fastcall*)(void*, void*, int, int, int, int, int, int))h->GetDefaultFunc();
+    orig(mgr, nullptr, spell_id, hex_ix, cast_type, hex2_ix, skill_level, spell_power);
+}
+
 void Install() {
     // Пробуем получить Patcher (требует что patcher_x86.dll уже загружен HD)
     Patcher* patcher = GetPatcher();
@@ -285,6 +344,8 @@ void Install() {
     // Ставим хуки
     // ReportDamageDone: точные броски урона из игрового лога
     g_PI->WriteHiHook(Addrs::ReportDamage, SPLICE_, EXTENDED_, THISCALL_, (void*)OnReportDamage);
+    // CastSpell: все касты в бою, включая вражеского героя
+    g_PI->WriteHiHook(Addrs::CastSpell, SPLICE_, EXTENDED_, THISCALL_, (void*)OnCastSpell);
     // Хуки 0x473950/0x475F90/0x4438D0 в HD_SOD не работают или крэшат - убраны,
     // старт/конец боя ловит PollThread через CombatManager
 
