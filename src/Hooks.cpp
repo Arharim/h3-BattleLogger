@@ -151,6 +151,20 @@ static DWORD WINAPI PollThread(LPVOID) {
                     BattleLogger::Instance().Log(ev);
                     heroSnap[side] = { hero->level, hero->experience, hero->spellPoints, true };
                 }
+                // осада: тир обороны по числу заряженных башен, тип из менеджера и ров
+                if (mgr->siegeKind >= 0) {
+                    int towersLoaded = 0;
+                    for (int i=0;i<3;++i) {
+                        if (!IsBadReadPtr(&mgr->towers[i], sizeof(mgr->towers[i])) && mgr->towers[i].monDefLoaded != nullptr)
+                            towersLoaded++;
+                    }
+                    BattleEvent sv{}; sv.type="siege";
+                    sv.extra=std::string("siegeKind=")+std::to_string(mgr->siegeKind)
+                        +" towersLoaded="+std::to_string(towersLoaded)
+                        +" moat="+std::to_string(mgr->hasMoat);
+                    sv.tick=GetTickCount();
+                    BattleLogger::Instance().Log(sv);
+                }
             }
             if (mgr->turn != lastTurn) {
                 // сброс счетчика = конец тактической фазы (turn тикает при расстановке)
