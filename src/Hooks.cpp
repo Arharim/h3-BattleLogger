@@ -75,7 +75,7 @@ static const char* ActionName(int a) {
 
 static DWORD WINAPI PollThread(LPVOID) {
     bool wasInBattle = false;
-    bool needZero = false;
+    bool prevFinished = false;
     int lastTurn = -1;
     void* lastActive = nullptr;
     int prevAlive[2][21] = {};
@@ -93,13 +93,15 @@ static DWORD WINAPI PollThread(LPVOID) {
         h3::H3CombatManager* mgr = nullptr;
         if (!IsBadReadPtr((void*)COMBAT_MGR_PTR, 4)) mgr = *(h3::H3CombatManager**)COMBAT_MGR_PTR;
         bool inBattle = (mgr != nullptr && !IsBadReadPtr(mgr, sizeof(h3::H3CombatManager)));
-        if (needZero && !inBattle) needZero=false;
-        if (inBattle && !wasInBattle && !needZero) {
+        if (inBattle && !wasInBattle) {
+            // после finished менеджер жив с finished=true - ждем сброса (replay) или нового боя
+            if (prevFinished && mgr->finished) { Sleep(20); continue; }
             BattleLogger::Instance().OpenNewBattle("poll");
             BattleLogger::Instance().LogBattleStart(-1,-1);
             lastTurn = mgr->turn;
             lastActive = mgr->activeStack;
             wasInBattle = true;
+            prevFinished = false;
             snapshotDone = false;
             lastLoggedAction = -1;
             wallsInit = false;
@@ -275,13 +277,14 @@ static DWORD WINAPI PollThread(LPVOID) {
                     BattleLogger::Instance().Log(ev);
                 }
                 BattleLogger::Instance().CloseBattle("finished");
-                wasInBattle=false; needZero=true; lastTurn=-1; lastActive=nullptr; prevInit=false; snapshotDone=false; lastLoggedAction=-1;
+                wasInBattle=false; prevFinished=true; lastTurn=-1; lastActive=nullptr; prevInit=false; snapshotDone=false; lastLoggedAction=-1;
                 heroSnap[0]=heroSnap[1]={0,0,0,false};
                 continue;
             }
         } else if (!inBattle && wasInBattle) {
             BattleLogger::Instance().CloseBattle("poll_end");
             wasInBattle=false; lastTurn=-1; lastActive=nullptr; prevInit=false; snapshotDone=false; lastLoggedAction=-1;
+            prevFinished=false;
         }
         Sleep(20);
     }
