@@ -76,6 +76,7 @@ static const char* ActionName(int a) {
 static DWORD WINAPI PollThread(LPVOID) {
     bool wasInBattle = false;
     bool prevFinished = false;
+    bool autoCombatPrev = false;
     int lastTurn = -1;
     void* lastActive = nullptr;
     int prevAlive[2][21] = {};
@@ -102,6 +103,7 @@ static DWORD WINAPI PollThread(LPVOID) {
             lastActive = mgr->activeStack;
             wasInBattle = true;
             prevFinished = false;
+            autoCombatPrev = false;
             snapshotDone = false;
             lastLoggedAction = -1;
             wallsInit = false;
@@ -259,6 +261,17 @@ static DWORD WINAPI PollThread(LPVOID) {
                         BattleLogger::Instance().Log(ev);
                         wallsAlivePrev[i]=alive;
                     }
+                }
+            }
+            // авто-бой (Q / быстрый бой): помечаем в логе, что дальше идет симуляция
+            {
+                bool ac = (mgr->autoCombat != 0);
+                if (ac != autoCombatPrev) {
+                    BattleEvent ev{}; ev.type="auto_combat";
+                    ev.extra = ac ? "on - rest of battle is simulated" : "off";
+                    ev.tick=GetTickCount();
+                    BattleLogger::Instance().Log(ev);
+                    autoCombatPrev = ac;
                 }
             }
             if (mgr->finished) {
